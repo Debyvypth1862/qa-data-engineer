@@ -1,0 +1,165 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: qa_postgres
+    environment:
+      POSTGRES_DB: qa_testing_db
+      POSTGRES_USER: qa_user
+      POSTGRES_PASSWORD: qa_password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - qa_network
+
+  # MySQL Database
+  mysql:
+    image: mysql:8.0
+    container_name: qa_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: qa_testing_db
+      MYSQL_USER: qa_user
+      MYSQL_PASSWORD: qa_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./config/mysql_init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - qa_network
+
+  # Apache Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: qa_zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - qa_network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: qa_kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+    networks:
+      - qa_network
+
+  # Redis for Caching
+  redis:
+    image: redis:7-alpine
+    container_name: qa_redis
+    ports:
+      - "6379:6379"
+    networks:
+      - qa_network
+
+  # Apache Airflow
+  airflow-webserver:
+    image: apache/airflow:2.7.3
+    container_name: qa_airflow_webserver
+    depends_on:
+      - postgres
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://qa_user:qa_password@postgres/qa_testing_db
+      AIRFLOW__CORE__FERNET_KEY: ''
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+    networks:
+      - qa_network
+
+  # Grafana for Monitoring
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: qa_grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./config/grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./config/grafana/datasources:/etc/grafana/provisioning/datasources
+    networks:
+      - qa_network
+
+  # Prometheus for Metrics
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: qa_prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - qa_network
+
+  # Jupyter Notebook for Data Analysis
+  jupyter:
+    image: jupyter/datascience-notebook:2023-11-26
+    container_name: qa_jupyter
+    ports:
+      - "8888:8888"
+    environment:
+      JUPYTER_ENABLE_LAB: 'yes'
+      JUPYTER_TOKEN: 'qa_token'
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./data:/home/jovyan/data
+    networks:
+      - qa_network
+
+  # Test API Server
+  test-api:
+    build:
+      context: ./src/api
+      dockerfile: Dockerfile
+    container_name: qa_test_api
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://qa_user:qa_password@postgres/qa_testing_db
+    depends_on:
+      - postgres
+    networks:
+      - qa_network
+
+volumes:
+  postgres_data:
+  mysql_data:
+  grafana_data:
+  prometheus_data:
+
+networks:
+  qa_network:
+    driver: bridge 
